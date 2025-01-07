@@ -1,0 +1,56 @@
+@startuml ER_DIAGRAM
+entity "models" {
+    model_id : INT
+    --
+    model_name : VARCHAR
+    description : TEXT
+    created_at : TIMESTAMP
+}
+
+entity "dimensions" {
+    dimension_id : INT
+    --
+    model_id : INT
+    dimension_name : VARCHAR
+    description : TEXT
+}
+
+entity "sub_dimensions" {
+    sub_dimension_id : INT
+    --
+    dimension_id : INT
+    sub_dimension_name : VARCHAR
+    description : TEXT
+}
+
+entity "criteria" {
+    criteria_id : INT
+    --
+    sub_dimension_id : INT
+    criteria_text : TEXT
+    level : INT
+    recommendation : TEXT
+}
+
+entity "user_configurations" {
+    config_id : INT
+    --
+    user_id : INT
+    model_id : INT
+    created_at : TIMESTAMP
+}
+
+entity "checklist_results" {
+    result_id : INT
+    --
+    config_id : INT
+    sub_dimension_id : INT
+    score : INT
+    comments : TEXT
+}
+
+"models" ||--o{ "dimensions" : contains
+"dimensions" ||--o{ "sub_dimensions" : has
+"sub_dimensions" ||--o{ "criteria" : defines
+"user_configurations" ||--o{ "checklist_results" : generates
+@enduml
