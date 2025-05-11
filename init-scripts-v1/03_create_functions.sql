@@ -1,37 +1,35 @@
--- Удаление старых функций, если они существуют
-DROP FUNCTION IF EXISTS get_models();
-DROP FUNCTION IF EXISTS get_criteria_by_model(INT);
-DROP FUNCTION IF EXISTS add_user_configuration(INT, INT);
-DROP FUNCTION IF EXISTS get_dimensions_by_model(INT);
-DROP FUNCTION IF EXISTS generate_checklist(INT);
-DROP FUNCTION IF EXISTS save_checklist_result(INT, INT, INT, TEXT);
-DROP FUNCTION IF EXISTS analyze_results(INT);
-DROP FUNCTION IF EXISTS get_recommendations(INT);
-
--- Функция для получения списка моделей зрелости
+-- 3.1 Функция для получения списка моделей
 CREATE OR REPLACE FUNCTION get_models()
-RETURNS TABLE(model_id INT, model_name VARCHAR) AS $$
+RETURNS TABLE(model_id INT, model_name VARCHAR, description TEXT) AS $$
 BEGIN
     RETURN QUERY
-    SELECT m.model_id, m.model_name
+    SELECT m.model_id, m.model_name, m.description
     FROM models m;
 END;
 $$ LANGUAGE plpgsql;
 
--- Функция для получения критериев по модели
-CREATE OR REPLACE FUNCTION get_criteria_by_model(p_model_id INT)
-RETURNS TABLE(dimension_name VARCHAR, sub_dimension_name VARCHAR, criteria_text TEXT) AS $$
+-- 3.2 Функция для рекурсивного обхода измерений (через prev_level)
+CREATE OR REPLACE FUNCTION generate_dimensions_tree(p_model_id INT)
+RETURNS TABLE(dimension_id INT, dimension_name VARCHAR, prev_level INT) AS $$
 BEGIN
     RETURN QUERY
-    SELECT d.dimension_name, sd.sub_dimension_name, c.criteria_text
-    FROM dimensions d
-    JOIN sub_dimensions sd ON d.dimension_id = sd.dimension_id
-    JOIN criteria c ON sd.sub_dimension_id = c.sub_dimension_id
-    WHERE d.model_id = p_model_id;
+        WITH RECURSIVE dim_tree AS (
+            SELECT d.dimension_id, d.dimension_name, d.prev_level
+            FROM dimensions d
+            WHERE d.model_id = p_model_id
+              AND d.prev_level IS NULL
+
+            UNION ALL
+
+            SELECT child.dimension_id, child.dimension_name, child.prev_level
+            FROM dimensions child
+            JOIN dim_tree parent ON child.prev_level = parent.dimension_id
+        )
+        SELECT * FROM dim_tree;
 END;
 $$ LANGUAGE plpgsql;
 
--- Функция для добавления пользовательской конфигурации
+-- 3.3 Создание конфигурации пользователя (выбор модели зрелости)
 CREATE OR REPLACE FUNCTION add_user_configuration(p_user_id INT, p_model_id INT)
 RETURNS VOID AS $$
 BEGIN
@@ -40,72 +38,66 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Функция для получения измерений для конкретной модели
-CREATE OR REPLACE FUNCTION get_dimensions_by_model(p_model_id INT)
-RETURNS TABLE(dimension_id INT, dimension_name VARCHAR, description TEXT) AS $$
-BEGIN
-    RETURN QUERY
-    SELECT d.dimension_id, d.dimension_name, d.description
-    FROM dimensions d
-    WHERE d.model_id = p_model_id;
-END;
-$$ LANGUAGE plpgsql;
-
--- Функция для генерации чек-листа для самооценки
-CREATE OR REPLACE FUNCTION generate_checklist(p_model_id INT)
-RETURNS TABLE(dimension_name VARCHAR, sub_dimension_name VARCHAR, criteria_text TEXT, level INT) AS $$
-BEGIN
-    RETURN QUERY
-    SELECT d.dimension_name, sd.sub_dimension_name, c.criteria_text, c.level
-    FROM dimensions d
-    JOIN sub_dimensions sd ON d.dimension_id = sd.dimension_id
-    JOIN criteria c ON sd.sub_dimension_id = c.sub_dimension_id
-    WHERE d.model_id = p_model_id;
-END;
-$$ LANGUAGE plpgsql;
-
--- Функция для сохранения результатов самооценки
-CREATE OR REPLACE FUNCTION save_checklist_result(p_config_id INT, p_sub_dimension_id INT, p_score INT, p_comments TEXT)
+-- 3.4 Связка конфигурации (config_id) и критерия (criteria_id)
+CREATE OR REPLACE FUNCTION link_criteria_to_config(p_config_id INT, p_criteria_id INT)
 RETURNS VOID AS $$
 BEGIN
-    INSERT INTO checklist_results (config_id, sub_dimension_id, score, comments)
-    VALUES (p_config_id, p_sub_dimension_id, p_score, p_comments);
+    INSERT INTO requirements_status (config_id, criteria_id)
+    VALUES (p_config_id, p_criteria_id);
 END;
 $$ LANGUAGE plpgsql;
 
--- Функция для расчета среднего балла по измерению
+-- 3.5 Сохранение оценки критерия и факта выполнения
+CREATE OR REPLACE FUNCTION save_criteria_score(
+    p_config_id INT,
+    p_criteria_id INT,
+    p_score INT,
+    p_comments TEXT,
+    p_completed BOOLEAN
+)
+RETURNS VOID AS $$
+BEGIN
+    UPDATE requirements_status
+       SET score = p_score,
+           comments = p_comments,
+           is_completed = p_completed
+     WHERE config_id = p_config_id
+       AND criteria_id = p_criteria_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 3.6 Анализ результатов: средний балл по каждому измерению
 CREATE OR REPLACE FUNCTION analyze_results(p_config_id INT)
 RETURNS TABLE(dimension_name VARCHAR, average_score NUMERIC) AS $$
 BEGIN
     RETURN QUERY
-    SELECT d.dimension_name, AVG(cr.score) AS average_score
-    FROM checklist_results cr
-    JOIN sub_dimensions sd ON cr.sub_dimension_id = sd.sub_dimension_id
-    JOIN dimensions d ON sd.dimension_id = d.dimension_id
-    WHERE cr.config_id = p_config_id
+    SELECT d.dimension_name,
+           AVG(rs.score) AS average_score
+    FROM requirements_status rs
+    JOIN criteria c ON rs.criteria_id = c.criteria_id
+    JOIN dimensions d ON c.dimension_id = d.dimension_id
+    WHERE rs.config_id = p_config_id
     GROUP BY d.dimension_name;
 END;
 $$ LANGUAGE plpgsql;
 
--- Функция для получения слабых мест
+-- 3.7 Получение рекомендаций (для невыполненных или низких оценок)
 CREATE OR REPLACE FUNCTION get_recommendations(p_config_id INT)
-RETURNS TABLE(dimension_name VARCHAR, sub_dimension_name VARCHAR, criteria_text TEXT, recommendations TEXT) AS $$
+RETURNS TABLE(dimension_name VARCHAR, criteria_text TEXT, recommendation TEXT) AS $$
 BEGIN
     RETURN QUERY
     SELECT 
-        d.dimension_name,
-        sd.sub_dimension_name,
-        c.criteria_text,
-        CASE
-            WHEN c.recommendations::jsonb ? cr.score::TEXT THEN c.recommendations::jsonb ->> cr.score::TEXT
-            ELSE 'Рекомендация отсутствует'
-        END AS recommendations
-    FROM checklist_results cr
-    JOIN sub_dimensions sd ON cr.sub_dimension_id = sd.sub_dimension_id
-    JOIN dimensions d ON sd.dimension_id = d.dimension_id
-    JOIN criteria c ON c.sub_dimension_id = cr.sub_dimension_id
-    WHERE cr.config_id = p_config_id;
+       d.dimension_name,
+       c.criteria_text,
+       CASE
+         WHEN c.recommendations::jsonb ? rs.score::TEXT 
+              THEN c.recommendations::jsonb ->> rs.score::TEXT
+         ELSE 'Рекомендация отсутствует'
+       END AS recommendation
+    FROM requirements_status rs
+    JOIN criteria c ON rs.criteria_id = c.criteria_id
+    JOIN dimensions d ON c.dimension_id = d.dimension_id
+    WHERE rs.config_id = p_config_id
+      AND (rs.score < 3 OR rs.is_completed = FALSE);
 END;
 $$ LANGUAGE plpgsql;
-
-

@@ -8,6 +8,8 @@ services:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: password
       POSTGRES_DB: maturity_classifier
+    volumes:
+      - ./init:/docker-entrypoint-initdb.d
     ports:
       - "5432:5432"
 
