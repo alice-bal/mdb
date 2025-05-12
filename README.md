@@ -139,4 +139,19 @@
    SELECT * FROM get_recommendations(1);
    ```
 
+## Инструкция к запуску проекта в vs code
+
+1. Запустить контейнер fr-maturity_classifier в Docker (или run services в vs code)
+
+2. Очистить БД и пересобрать контейнер для коррекного запуска скрипта init.sql
+Вариант 1: в терминале запустить 2 команды.
+   ```bash
+   docker-compose down -v
+   docker-compose up --build
+   ```
+Вариант 2: двойным щелчком запустить файл rebuild.bat
+Вариант 3: в терминале .\rebuild.bat
+
+3. Протестировать backend 
+   http://localhost:8000/docs 
 ---

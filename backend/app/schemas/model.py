@@ -1,9 +1,9 @@
 from pydantic import BaseModel
 
 class ModelOut(BaseModel):
-    id: int
-    name: str
+    model_id: int
+    model_name: str
     description: str | None = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True  # если FastAPI 0.100+ / Pydantic V2
